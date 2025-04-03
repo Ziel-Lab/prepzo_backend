@@ -1859,8 +1859,8 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
 
                 except Exception as e:
                     logger.error(
-    f"Error in user speech handler: {
-        type(e).__name__}")
+                        f"Error in user speech handler: {type(e).__name__}"
+                    )
 
             # Register the handler with optimized processing
             user_speech_handler = agent.on(
