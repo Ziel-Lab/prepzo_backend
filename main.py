@@ -1259,8 +1259,8 @@ def extract_client_ip(participant: rtc.Participant) -> str:
         participant.connection_info,
          "client_ip"):
             logger.info(
-    f"Found IP in connection_info: {
-        participant.connection_info.client_ip}")
+                f"Found IP in connection_info: {participant.connection_info.client_ip}"
+            )
             return participant.connection_info.client_ip
 
         # If we couldn't find an IP, log this for debugging
