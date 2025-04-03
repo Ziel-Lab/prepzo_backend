@@ -1367,8 +1367,8 @@ async def entrypoint(ctx: JobContext):
                 logger.info("OpenAI client initialized for web search")
             except Exception as openai_error:
                 logger.error(
-    f"Failed to initialize OpenAI client: {
-        str(openai_error)}")
+                    f"Failed to initialize OpenAI client: {str(openai_error)}"
+                )
 
         logger.info(f"connecting to room {ctx.room.name}")
         try:
