@@ -1076,8 +1076,8 @@ def get_local_time(timezone: str) -> Dict[str, Any]:
                     offset_hours = -1 * float(offset_str)
             except (IndexError, ValueError) as e:
                 logger.warning(
-    f"Error parsing negative UTC offset from {timezone}: {
-        str(e)}")
+                    f"Error parsing negative UTC offset from {timezone}: {str(e)}"
+                )
 
         # Named timezone handling would be better with pytz, but we can do a simple map
         # for common timezones if pytz is not available
