@@ -29,11 +29,6 @@ jobs:
       - name: Verify AWS credentials
         run: aws sts get-caller-identity
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '18'
-
       - name: Setup Python
         uses: actions/setup-python@v3
         with:
@@ -78,6 +73,53 @@ jobs:
           
           echo "Secrets stored in AWS Parameter Store"
 
+      - name: Create S3 bucket for deployments
+        run: |
+          BUCKET_NAME="prepzo-bot-deployments"
+          
+          # Check if bucket exists
+          if aws s3api head-bucket --bucket ${BUCKET_NAME} 2>/dev/null; then
+            echo "S3 bucket ${BUCKET_NAME} already exists"
+          else
+            echo "Creating S3 bucket: ${BUCKET_NAME}"
+            aws s3api create-bucket --bucket ${BUCKET_NAME} --region eu-north-1 --create-bucket-configuration LocationConstraint=eu-north-1
+          fi
+
+      - name: Create IAM role for CodeDeploy
+        run: |
+          # Create IAM role for CodeDeploy
+          CODEDEPLOY_ROLE_NAME="PrepzoBotCodeDeployRole"
+          
+          # Create trust policy for CodeDeploy
+          TRUST_POLICY='{
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "codedeploy.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          }'
+          
+          # Check if role exists
+          ROLE_EXISTS=$(aws iam get-role --role-name ${CODEDEPLOY_ROLE_NAME} --query "Role.Arn" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$ROLE_EXISTS" ]; then
+            echo "Creating CodeDeploy role: ${CODEDEPLOY_ROLE_NAME}"
+            aws iam create-role --role-name ${CODEDEPLOY_ROLE_NAME} --assume-role-policy-document "$TRUST_POLICY"
+            
+            # Attach required policies
+            aws iam attach-role-policy --role-name ${CODEDEPLOY_ROLE_NAME} --policy-arn arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+          else
+            echo "CodeDeploy role ${CODEDEPLOY_ROLE_NAME} already exists"
+          fi
+          
+          CODEDEPLOY_ROLE_ARN=$(aws iam get-role --role-name ${CODEDEPLOY_ROLE_NAME} --query "Role.Arn" --output text)
+          echo "CodeDeploy role ARN: ${CODEDEPLOY_ROLE_ARN}"
+
       - name: Create EC2 Instance Role
         run: |
           # Create IAM role for EC2 instance
@@ -104,13 +146,34 @@ jobs:
             echo "Creating EC2 instance role: ${INSTANCE_ROLE_NAME}"
             aws iam create-role --role-name ${INSTANCE_ROLE_NAME} --assume-role-policy-document "$TRUST_POLICY"
             
+            # Create policy for SSM Parameter Store access
+            SSM_POLICY_NAME="${INSTANCE_ROLE_NAME}-SSMAccess"
+            SSM_POLICY_DOC='{
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ssm:GetParameters",
+                    "ssm:GetParametersByPath",
+                    "ssm:GetParameter"
+                  ],
+                  "Resource": "arn:aws:ssm:eu-north-1:*:parameter/prepzo-bot/*"
+                }
+              ]
+            }'
+            
+            aws iam create-policy --policy-name ${SSM_POLICY_NAME} --policy-document "$SSM_POLICY_DOC" || true
+            SSM_POLICY_ARN=$(aws iam list-policies --query "Policies[?PolicyName=='${SSM_POLICY_NAME}'].Arn" --output text)
+            
             # Attach required policies for the EC2 instance
             aws iam attach-role-policy --role-name ${INSTANCE_ROLE_NAME} --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
-            aws iam attach-role-policy --role-name ${INSTANCE_ROLE_NAME} --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+            aws iam attach-role-policy --role-name ${INSTANCE_ROLE_NAME} --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforAWSCodeDeploy
+            aws iam attach-role-policy --role-name ${INSTANCE_ROLE_NAME} --policy-arn "$SSM_POLICY_ARN"
             
             # Create instance profile
-            aws iam create-instance-profile --instance-profile-name ${INSTANCE_ROLE_NAME}
-            aws iam add-role-to-instance-profile --instance-profile-name ${INSTANCE_ROLE_NAME} --role-name ${INSTANCE_ROLE_NAME}
+            aws iam create-instance-profile --instance-profile-name ${INSTANCE_ROLE_NAME} || true
+            aws iam add-role-to-instance-profile --instance-profile-name ${INSTANCE_ROLE_NAME} --role-name ${INSTANCE_ROLE_NAME} || true
             
             # Wait for profile to be ready
             echo "Waiting for instance profile to be ready..."
@@ -152,7 +215,6 @@ jobs:
           # Use Amazon Linux 2 AMI (Updated AMI ID for eu-north-1 region)
           AMI_ID="ami-040d60c831d02d41c"  # Amazon Linux 2 AMI for eu-north-1
           INSTANCE_TYPE="t3.small"
-          EC2_KEY_NAME="prepzo-bot-key" # This should be a key pair that exists in your account
           
           # User data script to install CodeDeploy agent
           USER_DATA=$(cat <<'EOF'
@@ -181,7 +243,7 @@ jobs:
           chown -R ec2-user:ec2-user /home/ec2-user/.env
           
           # Install Python 3
-          yum install -y python3 python3-pip
+          yum install -y python3 python3-pip python3-devel gcc
           
           # Make sure SSH is running and enabled
           systemctl enable sshd
@@ -195,174 +257,66 @@ jobs:
           # Get security group ID
           SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=PrepzoBotSecurityGroup" --query "SecurityGroups[0].GroupId" --output text)
           
-          echo "Launching new EC2 instance..."
-          INSTANCE_ID=$(aws ec2 run-instances \
-            --image-id ${AMI_ID} \
-            --instance-type ${INSTANCE_TYPE} \
-            --key-name ${EC2_KEY_NAME} \
-            --security-group-ids ${SG_ID} \
-            --user-data "$(echo "$USER_DATA" | base64 -w 0)" \
-            --iam-instance-profile Name=PrepzoBotEC2Role \
-            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=PrepzoBotInstance}]" \
-            --query "Instances[0].InstanceId" \
-            --output text)
+          # Check if instance already exists
+          INSTANCE_NAME="PrepzoBot"
+          EXISTING_INSTANCE=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=${INSTANCE_NAME}" "Name=instance-state-name,Values=running,pending,stopping,stopped" --query "Reservations[0].Instances[0].InstanceId" --output text)
+          
+          if [ "$EXISTING_INSTANCE" != "None" ] && [ ! -z "$EXISTING_INSTANCE" ]; then
+            echo "Instance ${INSTANCE_NAME} already exists with ID: ${EXISTING_INSTANCE}"
+            INSTANCE_ID=$EXISTING_INSTANCE
             
-          echo "New instance created with ID: ${INSTANCE_ID}"
-          echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
-          
-          # Wait for instance to become running
-          echo "Waiting for instance to be in running state..."
-          aws ec2 wait instance-running --instance-ids ${INSTANCE_ID}
-          
-          # Wait for instance status checks to pass
-          echo "Waiting for instance status checks to pass (this can take a few minutes)..."
-          aws ec2 wait instance-status-ok --instance-ids ${INSTANCE_ID}
-          
-          # Get instance public IP
-          INSTANCE_IP=$(aws ec2 describe-instances --instance-ids ${INSTANCE_ID} --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
-          echo "New instance public IP: ${INSTANCE_IP}"
-          echo "instance_ip=${INSTANCE_IP}" >> $GITHUB_OUTPUT
-          
-          # Verify the security group allows SSH connections
-          echo "Verifying security group rules..."
-          aws ec2 describe-security-groups --group-ids ${SG_ID} --query "SecurityGroups[0].IpPermissions[?ToPort==\`22\`]"
-          
-          # Add a delay to ensure the instance is fully booted and SSH is available
-          echo "Waiting 2 minutes for instance to fully initialize and SSH to become available..."
-          sleep 120
-
-      - name: Fix script line endings and permissions
-        run: |
-          # Fix line endings (convert CRLF to LF)
-          sed -i 's/\r$//' scripts/deploy.sh
-          sed -i 's/\r$//' scripts/check_deployment.py
-          
-          # Make scripts executable
-          chmod +x scripts/deploy.sh
-          chmod +x scripts/check_deployment.py
-          
-          # Display script for debugging
-          echo "Script contents:"
-          cat scripts/deploy.sh | head -20
-
-      - name: Create deployment package
-        run: |
-          # Create deployment package directly instead of using the script
-          echo "Creating deployment package manually..."
-          
-          # Create temp directory for deployment
-          TEMP_DIR=$(mktemp -d)
-          mkdir -p $TEMP_DIR/scripts
-          mkdir -p $TEMP_DIR/etc/systemd/system
-          
-          # Create appspec.yml
-          cat > $TEMP_DIR/appspec.yml << 'APPSPEC_EOF'
-          version: 0.0
-          os: linux
-          files:
-            - source: /
-              destination: /home/ec2-user/prepzo_bot
-          hooks:
-            BeforeInstall:
-              - location: scripts/before_install.sh
-                timeout: 300
-                runas: root
-            AfterInstall:
-              - location: scripts/after_install.sh
-                timeout: 300
-                runas: root
-            ApplicationStart:
-              - location: scripts/start_application.sh
-                timeout: 300
-                runas: root
-            ValidateService:
-              - location: scripts/validate_service.sh
-                timeout: 300
-                runas: root
-          APPSPEC_EOF
-          
-          cat > $TEMP_DIR/scripts/before_install.sh << 'BEFORE_INSTALL_EOF'
-          #!/bin/bash
-          echo "Before install starting"
-          mkdir -p /home/ec2-user/prepzo_bot
-          mkdir -p /home/ec2-user/.env
-          chmod 755 /home/ec2-user/prepzo_bot
-          chmod 755 /home/ec2-user/.env
-          echo "Before install completed"
-          exit 0
-          BEFORE_INSTALL_EOF
-          
-          cat > $TEMP_DIR/scripts/after_install.sh << 'AFTER_INSTALL_EOF'
-          #!/bin/bash
-          echo "After install starting"
-          echo "After install completed"
-          exit 0
-          AFTER_INSTALL_EOF
-          
-          cat > $TEMP_DIR/scripts/start_application.sh << 'START_EOF'
-          #!/bin/bash
-          echo "Start application starting"
-          # Create a simple success marker file
-          echo "Running" > /home/ec2-user/prepzo_bot/status.txt
-          echo "Start application completed"
-          exit 0
-          START_EOF
-          
-          cat > $TEMP_DIR/scripts/validate_service.sh << 'VALIDATE_EOF'
-          #!/bin/bash
-          echo "Validate service starting"
-          echo "Validate service completed"
-          # Always succeed
-          exit 0
-          VALIDATE_EOF
-          
-          # Make scripts executable
-          chmod +x $TEMP_DIR/scripts/*.sh
-          
-          # Save current git commit
-          git rev-parse HEAD > $TEMP_DIR/GIT_COMMIT
-          
-          # Copy application files to deployment package
-          echo "Copying application files to deployment package..."
-          rsync -a --exclude={.git,.github,node_modules,infrastructure,cdk.out,.env} . $TEMP_DIR/ || {
-            echo "rsync failed, falling back to manual copy"
-            find . -name "*.py" -type f -exec cp --parents {} $TEMP_DIR/ \;
-            
-            if [ -f "requirements.txt" ]; then
-              cp requirements.txt $TEMP_DIR/
+            # Ensure the instance is running
+            INSTANCE_STATE=$(aws ec2 describe-instances --instance-ids ${INSTANCE_ID} --query "Reservations[0].Instances[0].State.Name" --output text)
+            if [ "$INSTANCE_STATE" == "stopped" ]; then
+              echo "Starting instance ${INSTANCE_ID}"
+              aws ec2 start-instances --instance-ids ${INSTANCE_ID}
+              
+              # Wait for the instance to be running
+              echo "Waiting for instance to start..."
+              aws ec2 wait instance-running --instance-ids ${INSTANCE_ID}
             fi
-          }
-          
-          # Create ZIP archive
-          echo "Creating ZIP archive..."
-          (cd $TEMP_DIR && zip -r "$GITHUB_WORKSPACE/prepzo-bot-deployment.zip" .)
-          
-          # Verify the archive was created
-          ls -l "$GITHUB_WORKSPACE/prepzo-bot-deployment.zip"
-          echo "Deployment package created: prepzo-bot-deployment.zip"
-
-      - name: Create S3 bucket for deployment artifacts
-        run: |
-          # Generate a valid S3 bucket name (lowercase, no underscores)
-          BUCKET_NAME="prepzo-bot-deployment-$(echo ${{ github.repository }} | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]')"
-          
-          # Check if bucket exists
-          BUCKET_EXISTS=$(aws s3api list-buckets --query "Buckets[?Name=='${BUCKET_NAME}'].Name" --output text)
-          
-          if [ -z "$BUCKET_EXISTS" ]; then
-            echo "Creating S3 bucket: ${BUCKET_NAME}"
-            aws s3api create-bucket --bucket ${BUCKET_NAME} --create-bucket-configuration LocationConstraint=eu-north-1
-            aws s3api put-bucket-encryption --bucket ${BUCKET_NAME} --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}'
           else
-            echo "S3 bucket ${BUCKET_NAME} already exists"
+            echo "Launching new EC2 instance..."
+            INSTANCE_ID=$(aws ec2 run-instances \
+              --image-id ${AMI_ID} \
+              --instance-type ${INSTANCE_TYPE} \
+              --security-group-ids ${SG_ID} \
+              --user-data $(echo "$USER_DATA" | base64 -w 0) \
+              --iam-instance-profile Name=PrepzoBotEC2Role \
+              --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${INSTANCE_NAME}}]" \
+              --query "Instances[0].InstanceId" \
+              --output text)
+              
+            echo "Launched instance: ${INSTANCE_ID}"
+            
+            # Wait for the instance to be running
+            echo "Waiting for instance to be running..."
+            aws ec2 wait instance-running --instance-ids ${INSTANCE_ID}
+            
+            # Wait a bit longer for userdata script to complete
+            echo "Waiting for instance initialization..."
+            sleep 60
           fi
+          
+          # Get instance details
+          PUBLIC_IP=$(aws ec2 describe-instances --instance-ids ${INSTANCE_ID} --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+          PRIVATE_IP=$(aws ec2 describe-instances --instance-ids ${INSTANCE_ID} --query "Reservations[0].Instances[0].PrivateIpAddress" --output text)
+          
+          echo "Instance ${INSTANCE_ID} is running"
+          echo "Public IP: ${PUBLIC_IP}"
+          echo "Private IP: ${PRIVATE_IP}"
+          
+          # Set outputs for subsequent steps
+          echo "instance_id=${INSTANCE_ID}" >> $GITHUB_OUTPUT
+          echo "public_ip=${PUBLIC_IP}" >> $GITHUB_OUTPUT
+          echo "private_ip=${PRIVATE_IP}" >> $GITHUB_OUTPUT
 
-      - name: Create CodeDeploy application
-        id: create_app
+      - name: Create CodeDeploy Application
         run: |
-          # Check if CodeDeploy application exists
-          APP_NAME="prepzo-bot"
-          APP_EXISTS=$(aws deploy list-applications --query "applications[?contains(@, '${APP_NAME}')]" --output text)
+          APP_NAME="PrepzoBotApp"
+          
+          # Check if the application already exists
+          APP_EXISTS=$(aws deploy get-application --application-name ${APP_NAME} 2>/dev/null || echo "")
           
           if [ -z "$APP_EXISTS" ]; then
             echo "Creating CodeDeploy application: ${APP_NAME}"
@@ -370,257 +324,74 @@ jobs:
           else
             echo "CodeDeploy application ${APP_NAME} already exists"
           fi
-          
-          echo "application_name=${APP_NAME}" >> $GITHUB_OUTPUT
 
-      - name: Create CodeDeploy Service Role
+      - name: Create CodeDeploy Deployment Group
         run: |
-          # Create IAM role for CodeDeploy
-          ROLE_NAME="PrepzoBotCodeDeployRole"
+          APP_NAME="PrepzoBotApp"
+          DEPLOYMENT_GROUP="PrepzoBotDeploymentGroup"
           
-          # Create trust policy for CodeDeploy
-          TRUST_POLICY='{
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Effect": "Allow",
-                "Principal": {
-                  "Service": "codedeploy.amazonaws.com"
-                },
-                "Action": "sts:AssumeRole"
-              }
-            ]
-          }'
-          
-          # Check if role exists
-          ROLE_EXISTS=$(aws iam get-role --role-name ${ROLE_NAME} --query "Role.Arn" --output text 2>/dev/null || echo "")
-          
-          if [ -z "$ROLE_EXISTS" ]; then
-            echo "Creating CodeDeploy service role: ${ROLE_NAME}"
-            aws iam create-role --role-name ${ROLE_NAME} --assume-role-policy-document "$TRUST_POLICY"
-            
-            # Attach required policy for CodeDeploy
-            aws iam attach-role-policy --role-name ${ROLE_NAME} --policy-arn arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
-            
-            echo "Waiting for role to be ready..."
-            sleep 10
-          else
-            echo "CodeDeploy service role ${ROLE_NAME} already exists"
-          fi
-          
-          echo "codedeploy_role_arn=$(aws iam get-role --role-name ${ROLE_NAME} --query 'Role.Arn' --output text)" >> $GITHUB_OUTPUT
-
-      - name: Create CodeDeploy deployment group
-        id: create_deployment_group
-        run: |
-          # Get instance ID
+          # Get instance ID from previous step
           INSTANCE_ID="${{ steps.create_instance.outputs.instance_id }}"
-          APP_NAME="${{ steps.create_app.outputs.application_name }}"
-          DEPLOYMENT_GROUP="prepzo-bot-deployment-group"
-          SERVICE_ROLE_ARN=$(aws iam get-role --role-name PrepzoBotCodeDeployRole --query "Role.Arn" --output text)
+          
+          # Get CodeDeploy service role ARN
+          CODEDEPLOY_ROLE_ARN=$(aws iam get-role --role-name PrepzoBotCodeDeployRole --query "Role.Arn" --output text)
           
           # Check if deployment group exists
-          DG_EXISTS=$(aws deploy list-deployment-groups --application-name ${APP_NAME} --query "deploymentGroups[?contains(@, '${DEPLOYMENT_GROUP}')]" --output text || echo "")
+          DG_EXISTS=$(aws deploy get-deployment-group --application-name ${APP_NAME} --deployment-group-name ${DEPLOYMENT_GROUP} 2>/dev/null || echo "")
           
           if [ -z "$DG_EXISTS" ]; then
             echo "Creating CodeDeploy deployment group: ${DEPLOYMENT_GROUP}"
             aws deploy create-deployment-group \
               --application-name ${APP_NAME} \
               --deployment-group-name ${DEPLOYMENT_GROUP} \
-              --deployment-config-name CodeDeployDefault.AllAtOnce \
-              --ec2-tag-filters Key=Name,Value=PrepzoBotInstance,Type=KEY_AND_VALUE \
-              --service-role-arn ${SERVICE_ROLE_ARN}
+              --service-role-arn ${CODEDEPLOY_ROLE_ARN} \
+              --ec2-tag-filters Key=Name,Value=PrepzoBot,Type=KEY_AND_VALUE \
+              --deployment-config-name CodeDeployDefault.AllAtOnce
           else
             echo "CodeDeploy deployment group ${DEPLOYMENT_GROUP} already exists"
           fi
-          
-          echo "deployment_group=${DEPLOYMENT_GROUP}" >> $GITHUB_OUTPUT
 
-      - name: Create deployment package for CodeDeploy
-        id: create_deployment
+      - name: Create deployment archive
         run: |
-          # Create a proper CodeDeploy application bundle
-          mkdir -p codedeploy-bundle
-          
-          # Create appspec.yml for CodeDeploy
-          cat > codedeploy-bundle/appspec.yml << 'EOF'
-          version: 0.0
-          os: linux
-          files:
-            - source: /
-              destination: /home/ec2-user/prepzo_bot
-          hooks:
-            BeforeInstall:
-              - location: scripts/before_install.sh
-                timeout: 300
-                runas: root
-            AfterInstall:
-              - location: scripts/after_install.sh
-                timeout: 300
-                runas: root
-            ApplicationStart:
-              - location: scripts/start_application.sh
-                timeout: 300
-                runas: root
-            ValidateService:
-              - location: scripts/validate_service.sh
-                timeout: 300
-                runas: root
-          EOF
-          
-          # Create scripts directory
-          mkdir -p codedeploy-bundle/scripts
-          
-          # Create deployment scripts
-          cat > codedeploy-bundle/scripts/before_install.sh << 'EOF'
-          #!/bin/bash
-          echo "Before install starting"
-          mkdir -p /home/ec2-user/prepzo_bot
-          mkdir -p /home/ec2-user/.env
-          chmod 755 /home/ec2-user/prepzo_bot
-          chmod 755 /home/ec2-user/.env
-          echo "Before install completed"
-          exit 0
-          EOF
-          
-          cat > codedeploy-bundle/scripts/after_install.sh << 'EOF'
-          #!/bin/bash
-          echo "After install starting"
-          
-          # Install Python dependencies
-          cd /home/ec2-user/prepzo_bot
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -r requirements.txt
-          
-          # Setup environment
-          aws ssm get-parameters-by-path --path "/prepzo-bot/" --with-decryption --query "Parameters[*].{Name:Name,Value:Value}" | python3 -c '
-          import json
-          import sys
-          import os
-          
-          params = json.load(sys.stdin)
-          env_file = "/home/ec2-user/.env/prepzo_bot.env"
-          with open(env_file, "w") as f:
-              for param in params:
-                  name = param["Name"].split("/")[-1]
-                  value = param["Value"]
-                  f.write(f"{name}={value}\n")
-          
-          print(f"Environment variables written to {env_file}")
-          '
-          
-          # Create systemd service file
-          cat > /etc/systemd/system/prepzo-bot.service << 'SYSTEMD_EOF'
-          [Unit]
-          Description=Prepzo Bot Service
-          After=network.target
-          
-          [Service]
-          Type=simple
-          User=ec2-user
-          WorkingDirectory=/home/ec2-user/prepzo_bot
-          EnvironmentFile=/home/ec2-user/.env/prepzo_bot.env
-          ExecStart=/usr/bin/python3 /home/ec2-user/prepzo_bot/main.py start
-          StandardOutput=journal
-          StandardError=journal
-          Restart=always
-          RestartSec=10
-          
-          [Install]
-          WantedBy=multi-user.target
-          SYSTEMD_EOF
-          
-          systemctl daemon-reload
-          
-          echo "After install completed"
-          exit 0
-          EOF
-          
-          cat > codedeploy-bundle/scripts/start_application.sh << 'EOF'
-          #!/bin/bash
-          echo "Starting application"
-          systemctl enable prepzo-bot
-          systemctl start prepzo-bot
-          echo "Application started"
-          exit 0
-          EOF
-          
-          cat > codedeploy-bundle/scripts/validate_service.sh << 'EOF'
-          #!/bin/bash
-          echo "Validating service"
-          
-          # Check if service is running
-          if systemctl is-active --quiet prepzo-bot; then
-            echo "Prepzo bot service is running"
-            exit 0
-          else
-            echo "ERROR: Prepzo bot service is not running"
-            echo "Service status:"
-            systemctl status prepzo-bot
-            echo "Service logs:"
-            journalctl -u prepzo-bot -n 50
-            exit 1
-          fi
-          EOF
+          echo "Creating deployment archive"
           
           # Make scripts executable
-          chmod +x codedeploy-bundle/scripts/*.sh
+          chmod +x scripts/*.sh
           
-          # Copy application files to bundle
-          cp -r *.py codedeploy-bundle/
-          cp -r requirements.txt codedeploy-bundle/ || echo "No requirements.txt file found"
+          # Create a zip file of the application code
+          zip -r deploy.zip . -x "venv/*" "__pycache__/*" ".git/*" ".github/*" ".gitignore"
           
-          # Create the bundle ZIP file
-          cd codedeploy-bundle
-          zip -r ../prepzo-bot-bundle.zip .
-          cd ..
-          
-          # Upload to S3
-          BUCKET_NAME="prepzo-bot-deployment-$(echo ${{ github.repository }} | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]')"
-          BUNDLE_S3_KEY="bundles/prepzo-bot-${GITHUB_SHA}.zip"
-          
-          aws s3 cp prepzo-bot-bundle.zip s3://${BUCKET_NAME}/${BUNDLE_S3_KEY}
-          
-          echo "bundle_s3_bucket=${BUCKET_NAME}" >> $GITHUB_OUTPUT
-          echo "bundle_s3_key=${BUNDLE_S3_KEY}" >> $GITHUB_OUTPUT
+          # Upload the zip file to S3
+          aws s3 cp deploy.zip s3://prepzo-bot-deployments/
 
-      - name: Deploy to EC2 with CodeDeploy
+      - name: Deploy with CodeDeploy
         run: |
-          APP_NAME="${{ steps.create_app.outputs.application_name }}"
-          DEPLOYMENT_GROUP="${{ steps.create_deployment_group.outputs.deployment_group }}"
-          BUCKET_NAME="${{ steps.create_deployment.outputs.bundle_s3_bucket }}"
-          BUNDLE_S3_KEY="${{ steps.create_deployment.outputs.bundle_s3_key }}"
+          APP_NAME="PrepzoBotApp"
+          DEPLOYMENT_GROUP="PrepzoBotDeploymentGroup"
           
-          # Create deployment
+          echo "Deploying application with CodeDeploy"
+          
           DEPLOYMENT_ID=$(aws deploy create-deployment \
             --application-name ${APP_NAME} \
             --deployment-group-name ${DEPLOYMENT_GROUP} \
-            --s3-location bucket=${BUCKET_NAME},key=${BUNDLE_S3_KEY},bundleType=zip \
+            --revision "revisionType=S3,s3Location={bucket=prepzo-bot-deployments,key=deploy.zip,bundleType=zip}" \
+            --description "Deployment from GitHub Actions - $(date +'%Y-%m-%d %H:%M:%S')" \
             --query "deploymentId" --output text)
           
-          echo "Deployment created with ID: ${DEPLOYMENT_ID}"
+          echo "Deployment started with ID: ${DEPLOYMENT_ID}"
           
           # Wait for deployment to complete
           echo "Waiting for deployment to complete..."
           aws deploy wait deployment-successful --deployment-id ${DEPLOYMENT_ID}
           
-          # Get deployment status
-          DEPLOYMENT_STATUS=$(aws deploy get-deployment --deployment-id ${DEPLOYMENT_ID} --query "deploymentInfo.status" --output text)
+          echo "Deployment completed successfully"
+
+      - name: Output deployment details
+        run: |
+          PUBLIC_IP="${{ steps.create_instance.outputs.public_ip }}"
           
-          if [ "$DEPLOYMENT_STATUS" == "Succeeded" ]; then
-            echo "✅ Deployment successful!"
-          else
-            echo "❌ Deployment failed with status: ${DEPLOYMENT_STATUS}"
-            aws deploy get-deployment --deployment-id ${DEPLOYMENT_ID}
-            exit 1
-          fi
-          
-          # Print instance info
-          INSTANCE_IP="${{ steps.create_instance.outputs.instance_ip }}"
-          echo "===================================================================="
-          echo "🚀 DEPLOYMENT COMPLETED!"
-          echo "===================================================================="
-          echo "Instance ID: ${{ steps.create_instance.outputs.instance_id }}"
-          echo "Public IP: ${INSTANCE_IP}"
-          echo "SSH: ssh ec2-user@${INSTANCE_IP}"
-          echo "====================================================================" 
+          echo "Deployment completed successfully!"
+          echo "========================================"
+          echo "Application URL: http://${PUBLIC_IP}:8080"
+          echo "Server IP: ${PUBLIC_IP}"
+          echo "========================================" 

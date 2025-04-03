@@ -1,0 +1,32 @@
+version: 0.0
+os: linux
+files:
+  - source: /
+    destination: /home/ec2-user/prepzo_bot
+    exclude_patterns:
+      - venv/**
+      - __pycache__/**
+      - .git/**
+      - .github/**
+      - .gitignore
+hooks:
+  BeforeInstall:
+    - location: scripts/before-install.sh
+      timeout: 300
+      runas: ec2-user
+  AfterInstall:
+    - location: scripts/after-install.sh
+      timeout: 300
+      runas: ec2-user
+  ApplicationStart:
+    - location: scripts/application-start.sh
+      timeout: 300
+      runas: ec2-user
+  ApplicationStop:
+    - location: scripts/application-stop.sh
+      timeout: 300
+      runas: ec2-user
+  ValidateService:
+    - location: scripts/validate-service.sh
+      timeout: 300
+      runas: ec2-user 
