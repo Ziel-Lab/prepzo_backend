@@ -1182,8 +1182,8 @@ def get_local_time(timezone: str) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(
-    f"Error calculating local time for timezone {timezone}: {
-        str(e)}")
+            f"Error calculating local time for timezone {timezone}: {str(e)}"
+        )
         logger.error(f"Error type: {type(e)}")
         logger.error(f"Full error details: {repr(e)}")
 
