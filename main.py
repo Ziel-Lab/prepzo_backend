@@ -1392,13 +1392,11 @@ async def entrypoint(ctx: JobContext):
         except Exception as agent_error:
             logger.error(f"Error in multimodal agent: {str(agent_error)}")
             logger.error(
-    f"Participant details - Identity: {
-        participant.identity}, Name: {
-            participant.name}")
+                f"Participant details - Identity: { participant.identity}, Name: { participant.name}"
+            )
             logger.error(
-    f"Participant metadata type: {
-        type(
-            participant.metadata)}")
+                f"Participant metadata type: { type(participant.metadata)}"
+            )
             logger.error(f"Raw metadata content: {repr(participant.metadata)}")
             raise
 
