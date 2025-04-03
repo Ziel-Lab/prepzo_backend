@@ -627,10 +627,7 @@ async def store_full_conversation():
     1 for msg in conversation_history if not msg.get(
         "metadata", {}).get(
             "stored", False))
-        logger.info(
-            f"Storing full conversation with {
-                len(conversation_history)} messages ({to_store_count} unsaved)"
-        )
+        
 
         if to_store_count == 0:
             logger.info("All messages already stored")
