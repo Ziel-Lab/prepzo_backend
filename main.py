@@ -1731,11 +1731,10 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
         if user_context["location"]:
             loc = user_context["location"]
             parts = [loc.get('city'), loc.get('region'), loc.get('country')]
-            location_context_str = f"User location: {
-    ', '.join(
-        filter(
-            None,
-             parts))}"
+            location_context_str = (
+                f"User location: {', '.join(filter(None, parts))}"
+            )
+
 
         time_context_str = "No specific time context available."
         if user_context["local_time"]:
