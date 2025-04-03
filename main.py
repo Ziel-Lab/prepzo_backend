@@ -1920,9 +1920,8 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
                     if include_location and user_context.get("location"):
                         loc = user_context["location"]
                         if loc.get("city") and loc.get("country"):
-                            location_str = f" in {
-            loc.get('city')}, {
-                loc.get('country')}"
+                            location_str = f" in {loc.get('city')}, {loc.get('country')}"
+
                             query_to_search += location_str
                             logger.info(f"Added location context: {location_str}")
 
