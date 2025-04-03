@@ -1615,9 +1615,8 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
                     user_context["local_time"] = get_local_time(
                         location_data.get("timezone"))
                     logger.info(
-    f"Local time determined: {
-        json.dumps(
-            user_context['local_time'])}")
+                        f"Local time determined: {json.dumps(user_context['local_time'])}"
+                    )
             else:
                 logger.warning("Could not determine location from IP address")
         else:
