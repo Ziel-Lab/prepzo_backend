@@ -1580,9 +1580,9 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
     participant.metadata) if participant.metadata else {}
             logger.info(f"Parsed metadata: {metadata}")
         except json.JSONDecodeError as e:
-            logger.error(
-    f"Failed to parse metadata: {
-        str(e)}, using empty dict")
+            logger.error( 
+                f"Failed to parse metadata: {str(e)}, using empty dict"
+            )
             metadata = {}
 
         # Immediately extract location and time data, before doing anything
@@ -1602,16 +1602,16 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
             location_data = get_ip_location(client_ip)
             if location_data:
                 logger.info(
-    f"Successfully got location data from IP: {
-        json.dumps(location_data)}")
+                    f"Successfully got location data from IP: {json.dumps(location_data)}"
+                )
                 user_context["location"] = location_data
 
                 # If we have a timezone from geolocation, get local time
                 # immediately
                 if location_data.get("timezone"):
                     logger.info(
-    f"Getting local time from IP timezone: {
-        location_data.get('timezone')}")
+                        f"Getting local time from IP timezone: {location_data.get('timezone')}"
+                    )
                     user_context["local_time"] = get_local_time(
                         location_data.get("timezone"))
                     logger.info(
@@ -1627,23 +1627,22 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
         # priority than IP)
         if metadata.get("location"):
             logger.info(
-    f"Client provided location data: {
-        json.dumps(
-            metadata.get('location'))}")
+                f"Client provided location data: {json.dumps(metadata.get('location'))}"
+            )
             user_context["location"].update(metadata.get("location"))
 
         # Check if client directly provided timezone or local time data
         if metadata.get("timezone"):
             logger.info(
-    f"Client provided timezone: {
-        metadata.get('timezone')}")
+                f"Client provided timezone: { metadata.get('timezone')}"
+            )
             timezone = metadata.get("timezone")
             user_context["local_time"].update(get_local_time(timezone))
 
         if metadata.get("local_time"):
             logger.info(
-    f"Client provided local time: {
-        metadata.get('local_time')}")
+                f"Client provided local time: {metadata.get('local_time')}"
+            )
             if "local_time" not in user_context:
                 user_context["local_time"] = {}
             user_context["local_time"]["local_time"] = metadata.get(
@@ -1668,12 +1667,12 @@ async def run_multimodal_agent(ctx: JobContext, participant: rtc.Participant):
 
                     user_context["local_time"]["is_business_hours"] = 9 <= hour < 17
                     logger.info(
-    f"Inferred time of day: {
-        user_context['local_time']['time_of_day']}")
+                        f"Inferred time of day: {user_context['local_time']['time_of_day']}"
+                    )
             except Exception as e:
                 logger.warning(
-    f"Could not parse time of day from provided local_time: {
-        str(e)}")
+                    f"Could not parse time of day from provided local_time: {str(e)}"
+                )
 
         # Log what we found
         if user_context["location"]:
