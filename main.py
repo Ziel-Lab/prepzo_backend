@@ -1176,8 +1176,8 @@ def get_local_time(timezone: str) -> Dict[str, Any]:
         }
 
         logger.info(
-    f"Calculated local time for timezone {timezone}: {
-        result['local_time']}")
+            f"Calculated local time for timezone {timezone}: {result['local_time']}"
+        )
         return result
 
     except Exception as e:
