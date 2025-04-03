@@ -1061,9 +1061,9 @@ def get_local_time(timezone: str) -> Dict[str, Any]:
                     offset_hours = float(offset_str)
             except (IndexError, ValueError) as e:
                 logger.warning(
-                   f"Error parsing positive UTC offset from {timezone}: {
-                   str(e)}"
+                    f"Error parsing positive UTC offset from {timezone}: {str(e)}"
                 )
+
 
         elif timezone.startswith("UTC-") or timezone.startswith("GMT-"):
             try:
