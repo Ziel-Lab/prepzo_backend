@@ -1221,8 +1221,8 @@ def extract_client_ip(participant: rtc.Participant) -> str:
                 # Direct ip_address field
                 if metadata.get("ip_address"):
                     logger.info(
-    f"Found IP address in metadata.ip_address: {
-        metadata.get('ip_address')}")
+                        f"Found IP address in metadata.ip_address: {metadata.get('ip_address')}"
+                    )
                     return metadata.get("ip_address")
 
                 # Check headers if provided
@@ -1247,8 +1247,8 @@ def extract_client_ip(participant: rtc.Participant) -> str:
                             return ip
             except json.JSONDecodeError as e:
                 logger.error(
-    f"Error parsing participant metadata for IP: {
-        str(e)}")
+                    f"Error parsing participant metadata for IP: {str(e)}"
+                )
 
         # Try to get IP from connection info if LiveKit makes it available
         # This is implementation-specific and depends on what LiveKit makes
